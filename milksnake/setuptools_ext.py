@@ -21,7 +21,11 @@ except ImportError:
     bdist_wheel = None
 
 here = os.path.abspath(os.path.dirname(__file__))
-EMPTY_C = os.path.join(here, 'empty.c')
+EMPTY_C = u'''
+void init%(mod)s(void) {}
+void PyInit_%(mod)s(void) {}
+'''
+
 BUILD_PY = u'''
 import cffi
 from milksnake.ffi import make_ffi
@@ -84,6 +88,24 @@ class Spec(object):
                     func(base_path=base_path, inplace=False)
 
         class MilksnakeBuildExt(base_build_ext):
+            def get_ext_fullpath(self, ext_name):
+                milksnake_dummy_ext = None
+                for ext in spec.dist.ext_modules:
+                    if ext.name == ext_name:
+                        milksnake_dummy_ext = getattr(
+                            ext, 'milksnake_dummy_ext', None)
+                        break
+
+                if milksnake_dummy_ext is None:
+                    return base_build_ext.get_ext_fullpath(self, ext_name)
+
+                fullname = self.get_ext_fullname(ext_name)
+                modpath = fullname.split('.')
+                package = '.'.join(modpath[0:-1])
+                build_py = self.get_finalized_command('build_py')
+                package_dir = os.path.abspath(build_py.get_package_dir(package))
+                return os.path.join(package_dir, milksnake_dummy_ext)
+
             def run(self):
                 base_build_ext.run(self)
                 if self.inplace:
@@ -122,10 +144,15 @@ class ExternalBuildStep(BuildStep):
         path = self.path or '.'
         if in_path is not None:
             path = os.path.join(path, *in_path.split('/'))
-        to_find = 'lib%s%s' % (
-            name,
-            sys.platform == 'darwin' and '.dylib' or '.so',
-        )
+
+        to_find = None
+        if sys.platform == 'darwin':
+            to_find = 'lib%s.dylib' % name
+        elif sys.platform == 'win32':
+            to_find = '%s.dll' % name
+        else:
+            to_find = 'lib%s.so' % name
+
         for filename in os.listdir(path):
             if filename == to_find:
                 return os.path.join(path, filename)
@@ -155,6 +182,9 @@ class ExternalBuildStep(BuildStep):
 
 
 def get_rtld_flags(flags):
+    if sys.platform == "win32":
+        return 0
+
     ffi = FFI()
     if not flags:
         return ffi.RTLD_NOW
@@ -180,18 +210,19 @@ class CffiModuleBuildStep(BuildStep):
         self.header_strip_directives = header_strip_directives
         self.rtld_flags = get_rtld_flags(rtld_flags)
 
-        parts = self.module_path.rsplit('.', 2)
+        parts = self.module_path.rsplit('.', 1)
         self.module_base = parts[0]
         self.name = parts[-1]
 
         genbase = '%s._%s' % (parts[0], parts[1].lstrip('_'))
         self.cffi_module_path = '%s__ffi' % genbase
+        self.fake_module_path = '%s__lib' % genbase
 
+        from distutils.sysconfig import get_config_var
         self.lib_filename = '%s__lib%s' % (
             genbase.split('.')[-1],
-            new_compiler().shared_lib_extension,
+            get_config_var('SHLIB_SUFFIX') or get_config_var('SO')
         )
-        self.fake_module_path = '%s__lib' % genbase
 
     def get_header_source(self):
         if self.header_source is not None:
@@ -214,14 +245,24 @@ class CffiModuleBuildStep(BuildStep):
         # other systems into assuming our library has binary extensions.
         if dist.ext_modules is None:
             dist.ext_modules = []
-        dist.ext_modules.append(Extension(self.fake_module_path,
-                                          sources=[EMPTY_C]))
+
+        build = dist.get_command_obj('build')
+        build.ensure_finalized()
+        empty_c_path = os.path.join(build.build_temp, 'empty.c')
+        if not os.path.isdir(build.build_temp):
+            os.makedirs(build.build_temp)
+        with open(empty_c_path, 'w') as f:
+            f.write(EMPTY_C % {'mod': self.fake_module_path.split('.')[-1]})
+
+        ext = Extension(self.fake_module_path, sources=[empty_c_path])
+        ext.milksnake_dummy_ext = self.lib_filename
+        dist.ext_modules.append(ext)
 
         def make_ffi():
             from milksnake.ffi import make_ffi
             return make_ffi(self.module_path,
                             self.get_header_source(),
-                            strip_directives=True)
+                            strip_directives=self.header_strip_directives)
 
         def build_cffi(base_path, **extra):
             # dylib
@@ -235,11 +276,11 @@ class CffiModuleBuildStep(BuildStep):
             ffi = make_ffi()
             log.info('generating cffi module for %r' % self.module_path)
             py_file = os.path.join(
-                base_path, *self.cffi_module_path.split('.')[1:]) + '.py'
+                base_path, self.cffi_module_path.split('.')[-1]) + '.py'
             updated = cffi_recompiler.make_py_source(
                 ffi, self.cffi_module_path, py_file)
             if not updated:
-                log.info("already up-to-date")
+                log.info('already up-to-date')
 
             # wrapper
             log.info('generating wrapper for %r' % self.module_path)

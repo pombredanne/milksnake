@@ -1,5 +1,10 @@
 # Milksnake
 
+<a href="https://pypi.python.org/pypi/milksnake"><img src="https://img.shields.io/pypi/v/milksnake.svg" alt=""></a>
+<a href="https://travis-ci.org/getsentry/milksnake"><img src="https://travis-ci.org/getsentry/milksnake.svg?branch=master" alt=""></a>
+<a href="https://github.com/getsentry/milksnake/blob/master/LICENSE"><img src="https://img.shields.io/pypi/l/milksnake.svg" alt=""></a>
+
+
 Milksnake is an extension for setuptools that allows you to distribute
 dynamic linked libraries in Python wheels in the most portable way imaginable.
 
@@ -12,9 +17,10 @@ There are already other projects that make Python and native libraries play
 along but this one is different.  Unlike other projects that build Python
 extension modules the goal of this project is to build regular native libraries
 that are then loaded with CFFI at runtime.  Why not just use CFFI?  Because
-CFFI's setuptools support alone does not properly work with wheels and it does
-not provide a good way to invoke an external build process (like a makefile,
-cargo to build rust binaries etc.)
+CFFI's setuptools support alone does not properly work with such wheels (it
+does not provide a way to build and properly tag wheels for shared libraries) and
+it does not provide a good way to invoke an external build process (like a
+makefile, cargo to build rust binaries etc.)
 
 In particular you will most likely only need two wheels for Linux, one for macs
 and soon one for Windows independently of how many Python interpreters you want
@@ -22,7 +28,7 @@ to target.
 
 ## What is supported?
 
-* Platforms: Linux, Mac (Windows later)
+* Platforms: Linux, Mac, Windows
 * setuptools commands: `bdist_wheel`, `build`, `build_ext`, `develop`
 * `pip install --editable .`
 * Universal wheels (`PACKAGE-py2.py3-none-PLATFORM.whl`); this can be disabled
@@ -48,7 +54,8 @@ def build_native(spec):
     spec.add_cffi_module(
         module_path='example._native',
         dylib=lambda: build.find_dylib('example', in_path='target/release'),
-        header_filename=lambda: build.find_header('example.h', in_path='target')
+        header_filename=lambda: build.find_header('example.h', in_path='target'),
+        rtld_flags=['NOW', 'NODELETE']
     )
 
 setup(
@@ -92,6 +99,7 @@ And the `rust/Cargo.toml`:
 ```toml
 [package]
 name = "example"
+version = "0.1.0"
 build = "build.rs"
 
 [lib]
@@ -99,7 +107,7 @@ name = "example"
 crate-type = ["cdylib"]
 
 [build-dependencies]
-cbindgen = "0.1"
+cbindgen = "0.4"
 ```
 
 And finally the build.rs file:
